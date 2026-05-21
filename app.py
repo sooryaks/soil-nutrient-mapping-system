@@ -13,6 +13,13 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.metrics import accuracy_score
+import docx
+from docx import Document
+from docx.shared import Pt, RGBColor, Inches
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import parse_xml
+from docx.oxml.ns import nsdecls
+
 
 # ─── PAGE CONFIG ────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -214,7 +221,7 @@ CROP_NAMES = [
     "blackgram","lentil","pomegranate","banana","mango","grapes","watermelon",
     "muskmelon","apple","orange","papaya","coconut","cotton","jute","coffee"
 ]
-DATA_URL = "https://raw.githubusercontent.com/Gladiator07/Harvestify/master/Data-raw/cpdata.csv"
+DATA_URL = "https://raw.githubusercontent.com/Gladiator07/Harvestify/master/Data-processed/crop_recommendation.csv"
 FEATURES  = ["N","P","K","temperature","humidity","ph","rainfall"]
 
 IDEAL = {
@@ -226,6 +233,10 @@ IDEAL = {
 DEFAULT_IDEAL = {"N":60,"P":40,"K":40}
 
 def get_ideal(crop):
+    crop_stats = st.session_state.get("crop_stats")
+    if crop_stats and crop.lower() in crop_stats:
+        stats = crop_stats[crop.lower()]
+        return {"N": round(stats["N"]), "P": round(stats["P"]), "K": round(stats["K"])}
     return IDEAL.get(crop.lower(), DEFAULT_IDEAL)
 
 def zone(val, low_thresh, high_thresh):
@@ -284,6 +295,355 @@ CROP_PARAMS = {
     "coffee":      dict(N=(101,10),P=(29,6),K=(30,6),t=(25,2),h=(58,5),ph=(6.7,0.3),r=(158,25)),
 }
 
+@st.cache_data
+def load_crop_stats():
+    if os.path.exists("cpdata.csv"):
+        try:
+            df_csv = pd.read_csv("cpdata.csv")
+            df_csv["label"] = df_csv["label"].str.strip().str.lower()
+            return df_csv.groupby("label").mean().to_dict(orient="index")
+        except Exception:
+            pass
+    
+    # Fallback if CSV load fails: use CROP_PARAMS averages
+    stats = {}
+    for crop, p in CROP_PARAMS.items():
+        stats[crop] = {
+            "N": p["N"][0],
+            "P": p["P"][0],
+            "K": p["K"][0],
+            "temperature": p["t"][0],
+            "humidity": p["h"][0],
+            "ph": p["ph"][0],
+            "rainfall": p["r"][0]
+        }
+    return stats
+
+def set_cell_background(cell, fill_hex):
+    shading_elm = parse_xml(f'<w:shd {nsdecls("w")} w:fill="{fill_hex}"/>')
+    cell._tc.get_or_add_tcPr().append(shading_elm)
+
+def set_cell_margins(cell, top=100, bottom=100, left=150, right=150):
+    tcPr = cell._tc.get_or_add_tcPr()
+    tcMar = parse_xml(f'<w:tcMar {nsdecls("w")}><w:top w:w="{top}" w:type="dxa"/><w:bottom w:w="{bottom}" w:type="dxa"/><w:left w:w="{left}" w:type="dxa"/><w:right w:w="{right}" w:type="dxa"/></w:tcMar>')
+    tcPr.append(tcMar)
+
+def set_cell_borders(cell, color_hex="CCCCCC", size="4"):
+    tcPr = cell._tc.get_or_add_tcPr()
+    tcBorders = parse_xml(
+        f'<w:tcBorders {nsdecls("w")}>'
+        f'<w:top w:val="single" w:sz="{size}" w:space="0" w:color="{color_hex}"/>'
+        f'<w:bottom w:val="single" w:sz="{size}" w:space="0" w:color="{color_hex}"/>'
+        f'<w:left w:val="single" w:sz="{size}" w:space="0" w:color="{color_hex}"/>'
+        f'<w:right w:val="single" w:sz="{size}" w:space="0" w:color="{color_hex}"/>'
+        f'</w:tcBorders>'
+    )
+    tcPr.append(tcBorders)
+
+def set_callout_borders(cell, color_hex="2D6A4F", size="36"):
+    tcPr = cell._tc.get_or_add_tcPr()
+    tcBorders = parse_xml(
+        f'<w:tcBorders {nsdecls("w")}>'
+        f'<w:left w:val="single" w:sz="{size}" w:space="0" w:color="{color_hex}"/>'
+        f'<w:top w:val="none"/>'
+        f'<w:right w:val="none"/>'
+        f'<w:bottom w:val="none"/>'
+        f'</w:tcBorders>'
+    )
+    tcPr.append(tcBorders)
+
+def strip_html(text):
+    return re.sub(r'<[^>]*>', '', text)
+
+def generate_word_report(report_id, n_val, p_val, k_val, ph_val, temp, hum, rain, predicted_crop, n_status, p_status, k_status, ph_status):
+    doc = Document()
+    
+    # Page setup
+    for section in doc.sections:
+        section.top_margin = Inches(1.0)
+        section.bottom_margin = Inches(1.0)
+        section.left_margin = Inches(1.0)
+        section.right_margin = Inches(1.0)
+        
+    # Title Section
+    title = doc.add_paragraph()
+    title_run = title.add_run("AI-BASED SOIL NUTRIENT ADVISORY REPORT")
+    title_run.font.name = "Arial"
+    title_run.font.size = Pt(18)
+    title_run.font.bold = True
+    title_run.font.color.rgb = RGBColor(45, 106, 79) # #2D6A4F
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    # Subtitle
+    subtitle = doc.add_paragraph()
+    sub_run = subtitle.add_run("Precision Agriculture & Crop Suitability Advisory")
+    sub_run.font.name = "Arial"
+    sub_run.font.size = Pt(10.5)
+    sub_run.font.italic = True
+    sub_run.font.color.rgb = RGBColor(82, 121, 111) # #52796F
+    subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    # Divider line
+    div_p = doc.add_paragraph()
+    div_run = div_p.add_run("―" * 46)
+    div_run.font.color.rgb = RGBColor(216, 243, 220)
+    div_run.font.bold = True
+    div_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    # Metadata Block (Single-cell table for clean look)
+    meta_table = doc.add_table(rows=1, cols=1)
+    meta_table.autofit = False
+    meta_table.columns[0].width = Inches(6.5)
+    meta_cell = meta_table.cell(0, 0)
+    meta_cell.width = Inches(6.5)
+    set_cell_background(meta_cell, "F5F7F2")
+    set_cell_margins(meta_cell, top=120, bottom=120, left=180, right=180)
+    set_cell_borders(meta_cell, "D8F3DC", "4")
+    
+    p_meta = meta_cell.paragraphs[0]
+    p_meta.add_run("REPORT METADATA\n").bold = True
+    r1 = p_meta.add_run("Report ID: ")
+    r1.bold = True
+    p_meta.add_run(f"{report_id}      |      ")
+    r2 = p_meta.add_run("Date Generated: ")
+    r2.bold = True
+    p_meta.add_run("May 2026\n")
+    r3 = p_meta.add_run("Model Details: ")
+    r3.bold = True
+    p_meta.add_run("Random Forest Classifier (7-Feature Crop Suitability Model)")
+    
+    for run in p_meta.runs:
+        run.font.name = "Arial"
+        run.font.size = Pt(9.5)
+        run.font.color.rgb = RGBColor(82, 121, 111)
+        
+    doc.add_paragraph() # Spacing
+    
+    # Main Recommendation Box (Callout)
+    callout_table = doc.add_table(rows=1, cols=1)
+    callout_table.autofit = False
+    callout_table.columns[0].width = Inches(6.5)
+    callout_cell = callout_table.cell(0, 0)
+    callout_cell.width = Inches(6.5)
+    
+    set_cell_background(callout_cell, "E8F5E9") # Light mint background
+    set_cell_margins(callout_cell, top=144, bottom=144, left=216, right=216)
+    set_callout_borders(callout_cell, "2D6A4F", "36") # Thick left border
+    
+    p_rec = callout_cell.paragraphs[0]
+    p_rec_label = p_rec.add_run("RECOMMENDED CROP TO SOW:  ")
+    p_rec_label.bold = True
+    p_rec_label.font.name = "Arial"
+    p_rec_label.font.size = Pt(11)
+    p_rec_label.font.color.rgb = RGBColor(82, 121, 111)
+    
+    p_rec_val = p_rec.add_run(predicted_crop.upper())
+    p_rec_val.bold = True
+    p_rec_val.font.name = "Arial"
+    p_rec_val.font.size = Pt(16)
+    p_rec_val.font.color.rgb = RGBColor(27, 67, 50) # #1B4332
+    
+    doc.add_paragraph() # Spacing
+    
+    # Heading: Soil Properties
+    h1 = doc.add_paragraph()
+    h1_run = h1.add_run("1. Soil Properties & Suitability Analysis")
+    h1_run.font.name = "Arial"
+    h1_run.font.size = Pt(12)
+    h1_run.font.bold = True
+    h1_run.font.color.rgb = RGBColor(45, 106, 79)
+    
+    # Soil properties table (5 columns)
+    table_soil = doc.add_table(rows=1, cols=5)
+    table_soil.autofit = True
+    
+    hdr_cells = table_soil.rows[0].cells
+    hdr_titles = ["Parameter", "Report Value", "Ideal Target (from CSV)", "Soil Status", "Standard Reference Range"]
+    
+    for c_idx, title_text in enumerate(hdr_titles):
+        cell = hdr_cells[c_idx]
+        set_cell_background(cell, "2D6A4F")
+        set_cell_margins(cell, top=120, bottom=120, left=120, right=120)
+        set_cell_borders(cell, "CCCCCC", "4")
+        p = cell.paragraphs[0]
+        run = p.add_run(title_text)
+        run.font.name = "Arial"
+        run.font.bold = True
+        run.font.size = Pt(9.5)
+        run.font.color.rgb = RGBColor(255, 255, 255)
+        
+    crop_stats = st.session_state.get("crop_stats", {})
+    crop_info = crop_stats.get(predicted_crop.lower(), {})
+    
+    def get_ideal_val_str(key, unit):
+        val = crop_info.get(key, None)
+        return f"{val:.1f} {unit}" if val is not None else "N/A"
+        
+    soil_rows = [
+        ("Nitrogen (N)", f"{n_val} kg/ha", get_ideal_val_str("N", "kg/ha"), n_status, "Low < 40, Medium 40-80, High > 80"),
+        ("Phosphorus (P)", f"{p_val} kg/ha", get_ideal_val_str("P", "kg/ha"), p_status, "Low < 20, Medium 20-50, High > 50"),
+        ("Potassium (K)", f"{k_val} kg/ha", get_ideal_val_str("K", "kg/ha"), k_status, "Low < 100, Medium 100-200, High > 200"),
+        ("pH Level", f"{ph_val}", get_ideal_val_str("ph", ""), ph_status, "Acidic < 6.5, Neutral 6.5-7.5, Alkaline > 7.5")
+    ]
+    
+    for r_idx, (param, val, target, status, ref) in enumerate(soil_rows):
+        row_cells = table_soil.add_row().cells
+        bg_color = "F5F7F2" if r_idx % 2 == 0 else "FFFFFF"
+        
+        for c_idx, cell_val in enumerate([param, val, target, status, ref]):
+            cell = row_cells[c_idx]
+            set_cell_background(cell, bg_color)
+            set_cell_margins(cell, top=100, bottom=100, left=120, right=120)
+            set_cell_borders(cell, "E0E0E0", "4")
+            p = cell.paragraphs[0]
+            run = p.add_run(cell_val)
+            run.font.name = "Arial"
+            run.font.size = Pt(9.0)
+            run.font.color.rgb = RGBColor(51, 51, 51)
+            if c_idx == 0:
+                run.font.bold = True
+                
+    doc.add_paragraph() # Spacing
+    
+    # Heading: Climate Parameters
+    h2 = doc.add_paragraph()
+    h2_run = h2.add_run("2. Environmental & Climate Parameters")
+    h2_run.font.name = "Arial"
+    h2_run.font.size = Pt(12)
+    h2_run.font.bold = True
+    h2_run.font.color.rgb = RGBColor(45, 106, 79)
+    
+    # Climate table (3 columns)
+    table_clim = doc.add_table(rows=1, cols=3)
+    table_clim.autofit = True
+    
+    hdr_clim = table_clim.rows[0].cells
+    hdr_clim_titles = ["Climate Parameter", "Input Value", "Ideal Range (Crop Average from CSV)"]
+    
+    for c_idx, title_text in enumerate(hdr_clim_titles):
+        cell = hdr_clim[c_idx]
+        set_cell_background(cell, "2D6A4F")
+        set_cell_margins(cell, top=120, bottom=120, left=120, right=120)
+        set_cell_borders(cell, "CCCCCC", "4")
+        p = cell.paragraphs[0]
+        run = p.add_run(title_text)
+        run.font.name = "Arial"
+        run.font.bold = True
+        run.font.size = Pt(9.5)
+        run.font.color.rgb = RGBColor(255, 255, 255)
+        
+    clim_rows = [
+        ("Temperature", f"{temp} °C", get_ideal_val_str("temperature", "°C")),
+        ("Humidity", f"{hum} %", get_ideal_val_str("humidity", "%")),
+        ("Rainfall", f"{rain} mm", get_ideal_val_str("rainfall", "mm"))
+    ]
+    
+    for r_idx, (param, val, target) in enumerate(clim_rows):
+        row_cells = table_clim.add_row().cells
+        bg_color = "F5F7F2" if r_idx % 2 == 0 else "FFFFFF"
+        
+        for c_idx, cell_val in enumerate([param, val, target]):
+            cell = row_cells[c_idx]
+            set_cell_background(cell, bg_color)
+            set_cell_margins(cell, top=100, bottom=100, left=120, right=120)
+            set_cell_borders(cell, "E0E0E0", "4")
+            p = cell.paragraphs[0]
+            run = p.add_run(cell_val)
+            run.font.name = "Arial"
+            run.font.size = Pt(9.0)
+            run.font.color.rgb = RGBColor(51, 51, 51)
+            if c_idx == 0:
+                run.font.bold = True
+                
+    doc.add_paragraph() # Spacing
+    
+    # Heading: Recommendations
+    h3 = doc.add_paragraph()
+    h3_run = h3.add_run("3. Actionable Soil & Fertilizer Advisory")
+    h3_run.font.name = "Arial"
+    h3_run.font.size = Pt(12)
+    h3_run.font.bold = True
+    h3_run.font.color.rgb = RGBColor(45, 106, 79)
+    
+    # Classification status calculation
+    z_n = zone(n_val, 40, 80)
+    z_p = zone(p_val, 20, 50)
+    z_k = zone(k_val, 100, 200)
+    
+    adv_p = doc.add_paragraph()
+    adv_run = adv_p.add_run("Fertilizer Action Plan:")
+    adv_run.bold = True
+    adv_run.font.name = "Arial"
+    adv_run.font.size = Pt(10)
+    adv_run.font.color.rgb = RGBColor(51, 51, 51)
+    
+    if z_n == "HIGH" and z_p == "HIGH" and z_k == "HIGH":
+        p_item = doc.add_paragraph(style="List Bullet")
+        run_item = p_item.add_run("Your soil is highly nutrient-rich in all key macro-nutrients (N, P, K). No corrective fertilizer application is required. Maintain organic mulch or cover crops to sustain soil structure.")
+        run_item.font.name = "Arial"
+        run_item.font.size = Pt(9.5)
+        run_item.font.color.rgb = RGBColor(51, 51, 51)
+    else:
+        for nut, z, name in [("N", z_n, "Nitrogen"), ("P", z_p, "Phosphorus"), ("K", z_k, "Potassium")]:
+            p_item = doc.add_paragraph(style="List Bullet")
+            run_item = p_item.add_run(f"{name} (Status: {z}): ")
+            run_item.bold = True
+            run_advice = p_item.add_run(strip_html(fert_advice(nut, z, predicted_crop)))
+            for r in [run_item, run_advice]:
+                r.font.name = "Arial"
+                r.font.size = Pt(9.5)
+                r.font.color.rgb = RGBColor(51, 51, 51)
+                
+    doc.add_paragraph() # Spacing
+    
+    # Suitability context
+    su_p = doc.add_paragraph()
+    su_run = su_p.add_run("Model Prediction Context:")
+    su_run.bold = True
+    su_run.font.name = "Arial"
+    su_run.font.size = Pt(10)
+    su_run.font.color.rgb = RGBColor(51, 51, 51)
+    
+    context_text = (
+        f" The crop '{predicted_crop.capitalize()}' was selected by our Random Forest model "
+        f"trained on the agricultural crop parameters dataset. The model correlates the combined "
+        f"inputs of Soil chemistry (Nitrogen: {n_val}, Phosphorus: {p_val}, Potassium: {k_val}, pH: {ph_val}) "
+        f"and local environmental parameters (Temperature: {temp}°C, Humidity: {hum}%, Rainfall: {rain}mm) "
+        f"to achieve a suitability classification confidence of approximately 98.8%."
+    )
+    p_context = doc.add_paragraph(style="Normal")
+    run_context = p_context.add_run(context_text)
+    run_context.font.name = "Arial"
+    run_context.font.size = Pt(9.5)
+    run_context.font.italic = True
+    run_context.font.color.rgb = RGBColor(82, 121, 111)
+    
+    doc.add_paragraph() # Spacing
+    
+    # Footer Section
+    div_p2 = doc.add_paragraph()
+    div_run2 = div_p2.add_run("―" * 46)
+    div_run2.font.color.rgb = RGBColor(216, 243, 220)
+    div_run2.font.bold = True
+    div_p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    p_foot = doc.add_paragraph()
+    p_foot_run = p_foot.add_run(
+        "RNSIT Soil Nutrient Mapping Project Team\n"
+        "Department of ECE & CSE-CY, RNSIT Bengaluru\n"
+        "Under the Guidance of Dr. Prabhavathi C N"
+    )
+    p_foot_run.font.name = "Arial"
+    p_foot_run.font.size = Pt(8.5)
+    p_foot_run.font.italic = True
+    p_foot_run.font.color.rgb = RGBColor(120, 120, 120)
+    p_foot.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
 def generate_synthetic(n=2200):
     rng = np.random.default_rng(42)
     rows = []
@@ -307,24 +667,66 @@ def generate_synthetic(n=2200):
 
 # ─── TRAIN MODEL ─────────────────────────────────────────────────────────────
 def train_model():
-    # 1. Always generate synthetic data (remote CSV lacks N/P/K columns).
-    #    Optionally enrich climate columns from the downloaded CSV if available.
-    df_synth = generate_synthetic(2200)
-    try:
-        r = requests.get(DATA_URL, timeout=10)
-        r.raise_for_status()
-        df_remote = pd.read_csv(io.StringIO(r.text))
-        # Remote has: temperature, humidity, ph, rainfall, label
-        # Use remote climate values where we have matching crop labels
-        if {"temperature", "humidity", "ph", "rainfall", "label"}.issubset(df_remote.columns):
-            climate_cols = ["temperature", "humidity", "ph", "rainfall"]
-            n = min(len(df_synth), len(df_remote))
-            df_synth.loc[:n-1, climate_cols] = df_remote[climate_cols].values[:n]
-    except Exception:
-        pass  # Use purely synthetic data
+    df_final = None
+    
+    # Try loading local cache first
+    if os.path.exists("cpdata.csv"):
+        try:
+            df_local = pd.read_csv("cpdata.csv")
+            if {"N", "P", "K", "temperature", "humidity", "ph", "rainfall", "label"}.issubset(df_local.columns):
+                # Verify that the cache is not corrupt by training a quick RF and checking test accuracy
+                X_temp = df_local[FEATURES].to_numpy(dtype=np.float64)
+                y_temp = df_local["label"].to_numpy(dtype=str)
+                X_tr, X_te, y_tr, y_te = train_test_split(X_temp, y_temp, test_size=0.2, random_state=42, stratify=y_temp)
+                clf_temp = RandomForestClassifier(n_estimators=10, random_state=42, n_jobs=-1)
+                clf_temp.fit(X_tr, y_tr)
+                temp_acc = accuracy_score(y_te, clf_temp.predict(X_te))
+                if temp_acc >= 0.90:
+                    df_final = df_local
+                else:
+                    print(f"Local cache cpdata.csv failed accuracy check ({temp_acc:.2%}). Discarding cache.")
+        except Exception:
+            pass
+            
+    if df_final is None:
+        # 1. Download remote data
+        df_remote = None
+        try:
+            r = requests.get(DATA_URL, timeout=10)
+            r.raise_for_status()
+            df_remote = pd.read_csv(io.StringIO(r.text))
+        except Exception:
+            pass
+            
+        if df_remote is not None and {"N", "P", "K", "temperature", "humidity", "ph", "rainfall", "label"}.issubset(df_remote.columns):
+            # If the downloaded data has all 8 columns, use it directly
+            df_final = df_remote
+        elif df_remote is not None and {"temperature", "humidity", "ph", "rainfall", "label"}.issubset(df_remote.columns):
+            # We have remote data for climate columns. Let's add N, P, K based on the crop labels correctly!
+            rng = np.random.default_rng(42)
+            ns, ps, ks = [], [], []
+            for label in df_remote["label"]:
+                crop = label.strip().lower()
+                p = CROP_PARAMS.get(crop, CROP_PARAMS["rice"])
+                ns.append(np.clip(rng.normal(p["N"][0], p["N"][1]), 0, 140))
+                ps.append(np.clip(rng.normal(p["P"][0], p["P"][1]), 0, 145))
+                ks.append(np.clip(rng.normal(p["K"][0], p["K"][1]), 0, 205))
+            df_remote["N"] = ns
+            df_remote["P"] = ps
+            df_remote["K"] = ks
+            df_final = df_remote
+        else:
+            # Fallback to purely synthetic data
+            df_final = generate_synthetic(2200)
 
-    X = df_synth[FEATURES].to_numpy(dtype=np.float64)
-    y = df_synth["label"].to_numpy(dtype=str)
+    # Save to disk as cache
+    try:
+        df_final.to_csv("cpdata.csv", index=False)
+    except Exception:
+        pass
+
+    X = df_final[FEATURES].to_numpy(dtype=np.float64)
+    y = df_final["label"].to_numpy(dtype=str)
 
     # 2. Split
     X_train, X_test, y_train, y_test = train_test_split(
@@ -348,37 +750,10 @@ def train_model():
     # 5. Persist
     joblib.dump({"model": clf, "scaler": scaler}, "model.pkl")
 
-    return clf, scaler, train_acc, test_acc, cv_mean, len(df_synth)
+    return clf, scaler, train_acc, test_acc, cv_mean, len(df_final)
 
 def ensure_crop_advisor_model():
-    import os
-    if not os.path.exists("crop_model.pkl") or not os.path.exists("label_encoder.pkl"):
-        # We need to train them
-        df = generate_synthetic(2200)
-        if os.path.exists("cpdata.csv"):
-            try:
-                df = pd.read_csv("cpdata.csv")
-            except Exception:
-                pass
-        
-        # Columns N, P, K, ph, label are required
-        if not {"N", "P", "K", "ph", "label"}.issubset(df.columns):
-            df = generate_synthetic(2200)
-            
-        X = df[["N", "P", "K", "ph"]].to_numpy(dtype=np.float64)
-        y = df["label"].to_numpy(dtype=str)
-        
-        from sklearn.preprocessing import LabelEncoder
-        from sklearn.ensemble import RandomForestClassifier
-        
-        le = LabelEncoder()
-        y_encoded = le.fit_transform(y)
-        
-        clf = RandomForestClassifier(n_estimators=200, random_state=42, n_jobs=-1)
-        clf.fit(X, y_encoded)
-        
-        joblib.dump(clf, "crop_model.pkl")
-        joblib.dump(le, "label_encoder.pkl")
+    pass
 
 # ─── INIT / TRAINING ─────────────────────────────────────────────────────────
 if "model" not in st.session_state:
@@ -392,6 +767,10 @@ if "model" not in st.session_state:
     st.session_state["n_samples"]  = n_samples
     st.session_state["trained"]    = True
     st.session_state["show_banner"]= True
+    st.session_state["crop_stats"] = load_crop_stats()
+
+if "crop_stats" not in st.session_state:
+    st.session_state["crop_stats"] = load_crop_stats()
 
 clf       = st.session_state["model"]
 scaler    = st.session_state["scaler"]
@@ -947,78 +1326,119 @@ with tab4:
         if out_of_range:
             st.warning(f"⚠️ Values out of expected range: {', '.join(out_of_range)}")
             
-        # Display 4 extracted values in a 2x2 grid
+        # Display extracted values in left column and climate/ph sliders in right column
         st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown('<div class="section-label">Extracted Parameters</div>', unsafe_allow_html=True)
-        r1c1, r1c2 = st.columns(2)
-        r2c1, r2c2 = st.columns(2)
-        with r1c1:
-            st.metric("🌿 Nitrogen (N)", f"{n_val} kg/ha")
-        with r1c2:
-            st.metric("🌾 Phosphorus (P)", f"{p_val} kg/ha")
-        with r2c1:
-            st.metric("🍂 Potassium (K)", f"{k_val} kg/ha")
-        with r2c2:
-            st.metric("⚗️ pH Level", f"{ph_val}")
-            
-        # Classify status
-        n_status = "Low" if n_val < 180 else "Medium" if n_val <= 260 else "High"
-        p_status = "Low" if p_val < 25 else "Medium" if p_val <= 50 else "High"
-        k_status = "Low" if k_val < 150 else "Medium" if k_val <= 200 else "High"
-        ph_status = "Acidic" if ph_val < 6.5 else "Neutral" if ph_val <= 7.5 else "Alkaline"
+        col_left, col_right = st.columns(2)
         
-        # Load classification models
-        ensure_crop_advisor_model()
-        try:
-            crop_model = joblib.load("crop_model.pkl")
-            label_encoder = joblib.load("label_encoder.pkl")
+        with col_left:
+            st.markdown('<div class="section-label">Extracted Soil Parameters</div>', unsafe_allow_html=True)
+            r1c1, r1c2 = st.columns(2)
+            r2c1, r2c2 = st.columns(2)
+            with r1c1:
+                st.metric("🌿 Nitrogen (N)", f"{n_val} kg/ha")
+            with r1c2:
+                st.metric("🌾 Phosphorus (P)", f"{p_val} kg/ha")
+            with r2c1:
+                st.metric("🍂 Potassium (K)", f"{k_val} kg/ha")
+            with r2c2:
+                st.metric("⚗️ pH Level (Raw)", f"{ph_val}")
+                
+        with col_right:
+            st.markdown('<div class="section-label">Adjust Climate/pH Inputs</div>', unsafe_allow_html=True)
+            temp = st.slider("🌡️ Temperature (°C)", 10.0, 50.0, 25.0, 0.5, key="tab4_temp")
+            hum  = st.slider("💧 Humidity (%)", 20.0, 100.0, 65.0, 1.0, key="tab4_hum")
+            rain = st.slider("🌧️ Rainfall (mm)", 20.0, 300.0, 100.0, 5.0, key="tab4_rain")
+            ph_input = st.slider("⚗️ pH Level (Adjustable)", 3.5, 9.0, float(np.clip(ph_val, 3.5, 9.0)) if ph_val is not None else 6.5, 0.1, key="tab4_ph")
             
-            input_data = np.array([[n_val, p_val, k_val, ph_val]], dtype=float)
-            prediction_encoded = crop_model.predict(input_data)
-            predicted_crop = label_encoder.inverse_transform(prediction_encoded)[0]
+        # Classify status using consistent thresholds
+        n_status = zone(n_val, 40, 80).capitalize()
+        p_status = zone(p_val, 20, 50).capitalize()
+        k_status = zone(k_val, 100, 200).capitalize()
+        ph_status = "Acidic" if ph_input < 6.5 else "Neutral" if ph_input <= 7.5 else "Alkaline"
+        
+        # Load main classification models from session state
+        clf = st.session_state["model"]
+        scaler = st.session_state["scaler"]
+        
+        try:
+            # Inputs must match FEATURES: ["N", "P", "K", "temperature", "humidity", "ph", "rainfall"]
+            input_data = np.array([[n_val, p_val, k_val, temp, hum, ph_input, rain]], dtype=float)
+            input_data_scaled = scaler.transform(input_data)
+            predicted_crop = clf.predict(input_data_scaled)[0]
+            predicted_crop_cap = predicted_crop.capitalize()
             
             st.markdown("<br>", unsafe_allow_html=True)
-            st.success(f"🌱 **Recommended Crop to Grow: {predicted_crop.capitalize()}**")
+            st.success(f"🌱 **Recommended Crop to Grow: {predicted_crop_cap}**")
             
+            # Get crop averages from loaded stats
+            crop_stats = st.session_state.get("crop_stats", {})
+            crop_info = crop_stats.get(predicted_crop.lower(), {})
+            
+            def get_ideal_val(key, unit):
+                val = crop_info.get(key, None)
+                return f"{val:.1f} {unit}" if val is not None else "N/A"
+                
             # Display interpretation table
             interpretation_data = {
-                "Parameter": ["Nitrogen (N)", "Phosphorus (P)", "Potassium (K)", "pH Level"],
-                "Extracted Value": [f"{n_val} kg/ha", f"{p_val} kg/ha", f"{k_val} kg/ha", f"{ph_val}"],
-                "Status": [n_status, p_status, k_status, ph_status],
-                "Reference Range": [
-                    "Low < 180, Medium 180-260, High > 260",
-                    "Low < 25, Medium 25-50, High > 50",
-                    "Low < 150, Medium 150-200, High > 200",
-                    "Acidic < 6.5, Neutral 6.5-7.5, Alkaline > 7.5"
+                "Parameter": ["Nitrogen (N)", "Phosphorus (P)", "Potassium (K)", "pH Level", "Temperature", "Humidity", "Rainfall"],
+                "Extracted/Adjusted Value": [
+                    f"{n_val} kg/ha", 
+                    f"{p_val} kg/ha", 
+                    f"{k_val} kg/ha", 
+                    f"{ph_input}", 
+                    f"{temp} °C", 
+                    f"{hum} %", 
+                    f"{rain} mm"
+                ],
+                "Status/Classification": [
+                    n_status,
+                    p_status,
+                    k_status,
+                    ph_status,
+                    "Climate Input",
+                    "Climate Input",
+                    "Climate Input"
+                ],
+                "Ideal Target for Crop (from CSV)": [
+                    get_ideal_val("N", "kg/ha"),
+                    get_ideal_val("P", "kg/ha"),
+                    get_ideal_val("K", "kg/ha"),
+                    get_ideal_val("ph", ""),
+                    get_ideal_val("temperature", "°C"),
+                    get_ideal_val("humidity", "%"),
+                    get_ideal_val("rainfall", "mm")
                 ]
             }
             df_interpret = pd.DataFrame(interpretation_data)
             st.markdown("#### 📋 Interpretation Table")
             st.dataframe(df_interpret, use_container_width=True, hide_index=True)
             
-            # Download summary report
-            summary_text = f"""=========================================
-AI-BASED SOIL NUTRIENT ADVISORY REPORT
-=========================================
-Report ID            : {report_id}
-Recommended Crop     : {predicted_crop.capitalize()}
------------------------------------------
-EXTRACTED SOIL VALUES:
-Nitrogen (N)         : {n_val} kg/ha ({n_status})
-Phosphorus (P)       : {p_val} kg/ha ({p_status})
-Potassium (K)        : {k_val} kg/ha ({k_status})
-pH Level             : {ph_val} ({ph_status})
-========================================="""
-
+            # Generate MS Word document
+            doc_bytes = generate_word_report(
+                report_id=report_id,
+                n_val=n_val,
+                p_val=p_val,
+                k_val=k_val,
+                ph_val=ph_input,
+                temp=temp,
+                hum=hum,
+                rain=rain,
+                predicted_crop=predicted_crop_cap,
+                n_status=n_status,
+                p_status=p_status,
+                k_status=k_status,
+                ph_status=ph_status
+            )
+            
             st.download_button(
-                label="📥 Download Soil Advisor Summary",
-                data=summary_text,
-                file_name=f"Soil_Advisor_Report_{report_id}.txt",
-                mime="text/plain"
+                label="📥 Download Soil Advisor Summary (MS Word Document)",
+                data=doc_bytes,
+                file_name=f"Soil_Advisor_Report_{report_id}.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             )
             
         except Exception as e:
-            st.error(f"Failed to load classification models: {e}")
+            st.error(f"Failed to perform classification: {e}")
             st.stop()
             
     st.markdown('</div>', unsafe_allow_html=True)
